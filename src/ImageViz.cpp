@@ -93,7 +93,7 @@ public:
         [this](sensor_msgs::msg::Imu::UniquePtr) { imu_fps_.tick(); });
 
     gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
-        "/ublox_gps/fix", 10,
+        "/fix", 10,
         [this](sensor_msgs::msg::NavSatFix::UniquePtr) { gps_fps_.tick(); });
 
     wt_ = std::make_unique<std::thread>([this]() {
