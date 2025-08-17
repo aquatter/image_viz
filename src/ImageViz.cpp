@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -8,6 +9,8 @@
 #include <fmt/format.h>
 #include <memory>
 #include <mutex>
+#include <opencv2/core/matx.hpp>
+#include <opencv2/core/types.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -27,6 +30,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <shared_mutex>
+#include <string_view>
 #include <thread>
 
 class FPSMeter {
@@ -36,7 +40,6 @@ public:
   }
 
   void tick() {
-
     std::unique_lock lock{m_};
     time_vec_.push_back(
         std::chrono::system_clock::now().time_since_epoch().count());
@@ -46,8 +49,7 @@ public:
     }
   }
 
-  [[nodiscard]] std::optional<float> fps() {
-
+  [[nodiscard]] std::optional<float> fps() const {
     std::shared_lock lock{m_};
 
     if (time_vec_.size() < wnd_) {
@@ -68,7 +70,7 @@ public:
 private:
   size_t wnd_;
   std::deque<uint64_t> time_vec_;
-  std::shared_mutex m_;
+  mutable std::shared_mutex m_;
 };
 
 class ImageViz : public rclcpp::Node {
@@ -93,8 +95,14 @@ public:
         [this](sensor_msgs::msg::Imu::UniquePtr) { imu_fps_.tick(); });
 
     gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
-        "/fix", 10,
-        [this](sensor_msgs::msg::NavSatFix::UniquePtr) { gps_fps_.tick(); });
+        "/fix", 10, [this](sensor_msgs::msg::NavSatFix::UniquePtr msg) {
+          gps_is_valid_ = std::isnan(msg->latitude) or
+                                  std::isnan(msg->longitude) or
+                                  std::isnan(msg->altitude)
+                              ? false
+                              : true;
+          gps_fps_.tick();
+        });
 
     wt_ = std::make_unique<std::thread>([this]() {
       cv::namedWindow("debug", cv::WINDOW_FULLSCREEN);
@@ -126,28 +134,10 @@ public:
 
         cv::resize(img, img, {640, 480});
 
-        if (auto fps{img_fps_.fps()}; fps.has_value()) {
-          cv::putText(img, fmt::format("camera: {:.1f}", fps.value()), {10, 20},
-                      cv::FONT_HERSHEY_COMPLEX, 0.6, {0.0, 255.0, 0.0}, 1,
-                      cv::LINE_AA);
-        }
-
-        if (auto fps{imu_fps_.fps()}; fps.has_value()) {
-          cv::putText(img, fmt::format("imu: {:.1f}", fps.value()), {10, 40},
-                      cv::FONT_HERSHEY_COMPLEX, 0.6, {0.0, 255.0, 0.0}, 1,
-                      cv::LINE_AA);
-        }
-
-        if (auto fps{gps_fps_.fps()}; fps.has_value()) {
-          cv::putText(img, fmt::format("gps: {:.1f}", fps.value()), {10, 60},
-                      cv::FONT_HERSHEY_COMPLEX, 0.6, {0.0, 255.0, 0.0}, 1,
-                      cv::LINE_AA);
-        }
+        draw(img);
 
         cv::imshow("debug", img);
-
-        if (cv::waitKey(1) == 27) {
-        }
+        cv::waitKey(1);
       }
 
       cv::destroyAllWindows();
@@ -162,6 +152,38 @@ public:
   }
 
 private:
+  void draw(cv::Mat_<cv::Vec3b> img) const {
+    int y_value{25};
+
+    if (auto fps{img_fps_.fps()}; fps.has_value()) {
+      draw_text(img, fmt::format("camera: {:.1f}", fps.value()), {10, y_value},
+                {0.0, 255.0, 0.0});
+    }
+
+    if (auto fps{imu_fps_.fps()}; fps.has_value()) {
+      y_value += 30;
+      draw_text(img, fmt::format("imu: {:.1f}", fps.value()), {10, y_value},
+                {0.0, 255.0, 0.0});
+    }
+
+    if (auto fps{gps_fps_.fps()}; fps.has_value()) {
+      y_value += 30;
+      const auto clr{gps_is_valid_ ? cv::Scalar{0.0, 255.0, 0.0}
+                                   : cv::Scalar{0.0, 0.0, 255.0}};
+      draw_text(img, fmt::format("gps: {:.1f}", fps.value()), {10, y_value},
+                clr);
+    }
+  }
+
+  void draw_text(cv::Mat_<cv::Vec3b> img, const std::string_view msg,
+                 const cv::Point p, const cv::Scalar clr) const {
+    cv::putText(img, msg.data(), p, cv::FONT_HERSHEY_COMPLEX, 0.6,
+                cv::Scalar::all(0.0), 7, cv::LINE_AA);
+
+    cv::putText(img, msg.data(), p, cv::FONT_HERSHEY_COMPLEX, 0.6, clr, 1,
+                cv::LINE_AA);
+  }
+
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr img_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
@@ -174,10 +196,10 @@ private:
   std::deque<sensor_msgs::msg::CompressedImage::UniquePtr> img_queue_;
   std::mutex img_protector_;
   std::atomic_bool stop_requested_{false};
+  std::atomic_bool gps_is_valid_{false};
 };
 
 int main(const int argc, const char *const *argv) {
-
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<ImageViz>());
   rclcpp::shutdown();
