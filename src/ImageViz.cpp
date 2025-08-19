@@ -132,7 +132,7 @@ public:
             cv::imdecode({msg->data.data(), static_cast<int>(msg->data.size())},
                          cv::IMREAD_UNCHANGED);
 
-        cv::resize(img, img, {640, 480});
+        cv::resize(img, img, {640, 400});
 
         draw(img);
 
@@ -190,7 +190,7 @@ private:
 
   FPSMeter img_fps_{10};
   FPSMeter imu_fps_{100};
-  FPSMeter gps_fps_{10};
+  FPSMeter gps_fps_{50};
 
   std::unique_ptr<std::thread> wt_;
   std::deque<sensor_msgs::msg::CompressedImage::UniquePtr> img_queue_;
